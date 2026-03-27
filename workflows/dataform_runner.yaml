@@ -1,0 +1,89 @@
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${args.project_id}
+          - region: ${args.region}
+          - repository_id: ${args.repository_id}
+          - git_commitish: ${args.git_commitish}
+          - included_tags: ${default(map.get(args, "included_tags"), [])}
+          - poll_seconds: ${default(map.get(args, "poll_seconds"), 20)}
+          - max_attempts: ${default(map.get(args, "max_attempts"), 30)}
+          - current_attempt: 0
+          - repository: ${"projects/" + project_id + "/locations/" + region + "/repositories/" + repository_id}
+
+    - createCompilationResult:
+        call: http.post
+        args:
+          url: ${"https://dataform.googleapis.com/v1beta1/" + repository + "/compilationResults"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+          body:
+            gitCommitish: ${git_commitish}
+        result: compilationResult
+
+    - createWorkflowInvocation:
+        call: http.post
+        args:
+          url: ${"https://dataform.googleapis.com/v1beta1/" + repository + "/workflowInvocations"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+          body:
+            compilationResult: ${compilationResult.body.name}
+            invocationConfig:
+              includedTags: ${included_tags}
+              transitiveDependenciesIncluded: true
+        result: workflowInvocation
+
+    - saveInvocationName:
+        assign:
+          - invocation_name: ${workflowInvocation.body.name}
+
+    - waitBeforePoll:
+        call: sys.sleep
+        args:
+          seconds: ${poll_seconds}
+
+    - increaseAttempt:
+        assign:
+          - current_attempt: ${current_attempt + 1}
+
+    - getInvocationStatus:
+        call: http.get
+        args:
+          url: ${"https://dataform.googleapis.com/v1beta1/" + invocation_name}
+          auth:
+            type: OAuth2
+        result: invocationStatus
+
+    - checkTerminalState:
+        switch:
+          - condition: ${invocationStatus.body.state == "SUCCEEDED"}
+            next: success
+          - condition: ${invocationStatus.body.state == "FAILED"}
+            next: failed
+          - condition: ${invocationStatus.body.state == "CANCELLED"}
+            next: cancelled
+          - condition: ${current_attempt >= max_attempts}
+            next: timeout
+        next: waitBeforePoll
+
+    - success:
+        return:
+          status: "SUCCESS"
+          invocation_name: ${invocation_name}
+          state: ${invocationStatus.body.state}
+
+    - failed:
+        raise: ${"Dataform invocation failed. Invocation: " + invocation_name}
+
+    - cancelled:
+        raise: ${"Dataform invocation cancelled. Invocation: " + invocation_name}
+
+    - timeout:
+        raise: ${"Dataform invocation polling timed out. Invocation: " + invocation_name}
