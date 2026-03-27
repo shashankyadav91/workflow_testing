@@ -1,0 +1,9 @@
+{
+  "project_id": "YOUR_PROJECT_ID",
+  "region": "us-central1",
+  "repository_id": "YOUR_DATAFORM_REPO",
+  "git_commitish": "main",
+  "included_tags": ["finance"],
+  "poll_seconds": 30,
+  "max_attempts": 40
+}
