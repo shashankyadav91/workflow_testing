@@ -11,6 +11,7 @@ main:
           - poll_seconds: ${default(map.get(args, "poll_seconds"), 20)}
           - max_attempts: ${default(map.get(args, "max_attempts"), 30)}
           - current_attempt: 0
+          - service_account: ${args.service_account}
           - repository: ${"projects/" + project_id + "/locations/" + region + "/repositories/" + repository_id}
 
     - createCompilationResult:
@@ -38,6 +39,7 @@ main:
             invocationConfig:
               includedTags: ${included_tags}
               transitiveDependenciesIncluded: true
+              serviceAccount: ${service_account}
         result: workflowInvocation
 
     - saveInvocationName:
@@ -80,10 +82,10 @@ main:
           state: ${invocationStatus.body.state}
 
     - failed:
-        raise: ${"Dataform invocation failed. Invocation: " + invocation_name}
+        raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
 
     - cancelled:
-        raise: ${"Dataform invocation cancelled. Invocation: " + invocation_name}
+        raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
 
     - timeout:
-        raise: ${"Dataform invocation polling timed out. Invocation: " + invocation_name}
+        raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
