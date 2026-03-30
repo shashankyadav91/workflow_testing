@@ -1,9 +1,9 @@
 {
-  "project_id": "YOUR_PROJECT_ID",
+  "project_id": "test1-486007",
   "region": "us-central1",
-  "repository_id": "YOUR_DATAFORM_REPO",
+  "repository_id": "test_workflow",
   "git_commitish": "main",
-  "included_tags": ["finance"],
   "poll_seconds": 30,
-  "max_attempts": 40
+  "max_attempts": 40,
+  "service_account": "workflow-dataform-sa@test1-486007.iam.gserviceaccount.com"
 }
