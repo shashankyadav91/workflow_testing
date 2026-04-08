@@ -13,6 +13,7 @@ main:
           - current_attempt: 0
           - service_account: ${args.service_account}
           - repository: ${"projects/" + project_id + "/locations/" + region + "/repositories/" + repository_id}
+          - pubsub_topic: ${default(map.get(args, "pubsub_topic"), "")}
 
     - createCompilationResult:
         call: http.post
@@ -46,6 +47,25 @@ main:
         assign:
           - invocation_name: ${workflowInvocation.body.name}
 
+    - maybePublish:
+        switch:
+          - condition: ${pubsub_topic != ""}
+            next: publishInvocation
+        next: waitBeforePoll
+
+    - publishInvocation:
+        call: http.post
+        args:
+          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+        body:
+          messages:
+            - data: ${base64.encode('{"invocation_name":"' + invocation_name + '"}')}
+        result: pubsubPublish
+
     - waitBeforePoll:
         call: sys.sleep
         args:
@@ -75,17 +95,58 @@ main:
             next: timeout
         next: waitBeforePoll
 
+
     - success:
+        switch:
+          - condition: ${pubsub_topic != ""}
+            next: publishFinalStatus
+        next: returnSuccess
+
+    - publishFinalStatus:
+        call: http.post
+        args:
+          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+        body:
+          messages:
+            - data: ${base64.encode('{"invocation_name":"' + invocation_name + '","state":"' + invocationStatus.body.state + '"}')}
+        result: pubsubFinalStatus
+
+    - returnSuccess:
         return:
           status: "SUCCESS"
           invocation_name: ${invocation_name}
           state: ${invocationStatus.body.state}
 
+
     - failed:
-        raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
+      switch:
+        - condition: ${pubsub_topic != ""}
+        next: publishFinalStatus
+      next: raiseFailed
+
+    - raiseFailed:
+      raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
+
 
     - cancelled:
-        raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
+      switch:
+        - condition: ${pubsub_topic != ""}
+        next: publishFinalStatus
+      next: raiseCancelled
+
+    - raiseCancelled:
+      raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
+
 
     - timeout:
-        raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
+      switch:
+        - condition: ${pubsub_topic != ""}
+        next: publishFinalStatus
+      next: raiseTimeout
+
+    - raiseTimeout:
+      raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
