@@ -6,5 +6,5 @@
   "poll_seconds": 30,
   "max_attempts": 40,
   "service_account": "workflow-dataform-sa@test1-486007.iam.gserviceaccount.com"
-  "pubsub_topic": "projects/your-project-id/topics/your-topic-name"
+  ,"pubsub_topic": "projects/test1-486007/topics/test_workflow"
 }
