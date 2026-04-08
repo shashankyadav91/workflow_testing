@@ -50,8 +50,13 @@ main:
     - maybePublish:
         switch:
           - condition: ${pubsub_topic != ""}
-            next: publishInvocation
+            next: buildInvocationMessage
         next: waitBeforePoll
+
+    - buildInvocationMessage:
+        assign:
+          - invocation_message:
+              invocation_name: ${invocation_name}
 
     - publishInvocation:
         call: http.post
@@ -61,9 +66,9 @@ main:
             type: OAuth2
           headers:
             Content-Type: application/json
-        body:
-          messages:
-            - data: ${base64.encode('{"invocation_name":"' + invocation_name + '"}')}
+          body:
+            messages:
+              - data: ${base64.encode(json.encode(invocation_message))}
         result: pubsubPublish
 
     - waitBeforePoll:
@@ -95,12 +100,17 @@ main:
             next: timeout
         next: waitBeforePoll
 
-
     - success:
         switch:
           - condition: ${pubsub_topic != ""}
-            next: publishFinalStatus
+            next: buildFinalStatusMessage
         next: returnSuccess
+
+    - buildFinalStatusMessage:
+        assign:
+          - final_status_message:
+              invocation_name: ${invocation_name}
+              state: ${invocationStatus.body.state}
 
     - publishFinalStatus:
         call: http.post
@@ -110,9 +120,9 @@ main:
             type: OAuth2
           headers:
             Content-Type: application/json
-        body:
-          messages:
-            - data: ${base64.encode('{"invocation_name":"' + invocation_name + '","state":"' + invocationStatus.body.state + '"}')}
+          body:
+            messages:
+              - data: ${base64.encode(json.encode(final_status_message))}
         result: pubsubFinalStatus
 
     - returnSuccess:
@@ -121,32 +131,89 @@ main:
           invocation_name: ${invocation_name}
           state: ${invocationStatus.body.state}
 
-
     - failed:
-      switch:
-        - condition: ${pubsub_topic != ""}
-        next: publishFinalStatus
-      next: raiseFailed
+        switch:
+          - condition: ${pubsub_topic != ""}
+            next: buildFinalStatusMessageFailed
+        next: raiseFailed
+
+    - buildFinalStatusMessageFailed:
+        assign:
+          - final_status_message:
+              invocation_name: ${invocation_name}
+              state: ${invocationStatus.body.state}
+
+    - publishFinalStatusFailed:
+        call: http.post
+        args:
+          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+          body:
+            messages:
+              - data: ${base64.encode(json.encode(final_status_message))}
+        result: pubsubFinalStatusFailed
+        next: raiseFailed
 
     - raiseFailed:
-      raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
-
+        raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
 
     - cancelled:
-      switch:
-        - condition: ${pubsub_topic != ""}
-        next: publishFinalStatus
-      next: raiseCancelled
+        switch:
+          - condition: ${pubsub_topic != ""}
+            next: buildFinalStatusMessageCancelled
+        next: raiseCancelled
+
+    - buildFinalStatusMessageCancelled:
+        assign:
+          - final_status_message:
+              invocation_name: ${invocation_name}
+              state: ${invocationStatus.body.state}
+
+    - publishFinalStatusCancelled:
+        call: http.post
+        args:
+          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+          body:
+            messages:
+              - data: ${base64.encode(json.encode(final_status_message))}
+        result: pubsubFinalStatusCancelled
+        next: raiseCancelled
 
     - raiseCancelled:
-      raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
-
+        raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
 
     - timeout:
-      switch:
-        - condition: ${pubsub_topic != ""}
-        next: publishFinalStatus
-      next: raiseTimeout
+        switch:
+          - condition: ${pubsub_topic != ""}
+            next: buildFinalStatusMessageTimeout
+        next: raiseTimeout
+
+    - buildFinalStatusMessageTimeout:
+        assign:
+          - final_status_message:
+              invocation_name: ${invocation_name}
+              state: "TIMEOUT"
+
+    - publishFinalStatusTimeout:
+        call: http.post
+        args:
+          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: application/json
+          body:
+            messages:
+              - data: ${base64.encode(json.encode(final_status_message))}
+        result: pubsubFinalStatusTimeout
+        next: raiseTimeout
 
     - raiseTimeout:
-      raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
+        raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
