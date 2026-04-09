@@ -6,70 +6,32 @@ main:
           - project_id: ${args.project_id}
           - region: ${args.region}
           - repository_id: ${args.repository_id}
-          - git_commitish: ${args.git_commitish}
-          - included_tags: ${default(map.get(args, "included_tags"), [])}
+          - workflow_config_id: ${args.workflow_config_id}
           - poll_seconds: ${default(map.get(args, "poll_seconds"), 20)}
           - max_attempts: ${default(map.get(args, "max_attempts"), 30)}
           - current_attempt: 0
           - service_account: ${args.service_account}
           - repository: ${"projects/" + project_id + "/locations/" + region + "/repositories/" + repository_id}
-          - pubsub_topic: ${default(map.get(args, "pubsub_topic"), "")}
-
-    - createCompilationResult:
-        call: http.post
-        args:
-          url: ${"https://dataform.googleapis.com/v1beta1/" + repository + "/compilationResults"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
-          body:
-            gitCommitish: ${git_commitish}
-        result: compilationResult
+          - workflow_config: ${repository + "/workflowConfigs/" + workflow_config_id}
+          - pubsub_topic_job_summary: ${default(map.get(args, "pubsub_topic_job_summary"), "")}
+          - workflow_name: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_ID")}
+          - workflow_start_time: ${sys.now()}
 
     - createWorkflowInvocation:
         call: http.post
         args:
-          url: ${"https://dataform.googleapis.com/v1beta1/" + repository + "/workflowInvocations"}
+          url: ${"https://dataform.googleapis.com/v1/" + repository + "/workflowInvocations"}
           auth:
             type: OAuth2
           headers:
             Content-Type: application/json
           body:
-            compilationResult: ${compilationResult.body.name}
-            invocationConfig:
-              includedTags: ${included_tags}
-              transitiveDependenciesIncluded: true
-              serviceAccount: ${service_account}
+            workflowConfig: ${workflow_config}
         result: workflowInvocation
 
     - saveInvocationName:
         assign:
           - invocation_name: ${workflowInvocation.body.name}
-
-    - maybePublish:
-        switch:
-          - condition: ${pubsub_topic != ""}
-            next: buildInvocationMessage
-        next: waitBeforePoll
-
-    - buildInvocationMessage:
-        assign:
-          - invocation_message:
-              invocation_name: ${invocation_name}
-
-    - publishInvocation:
-        call: http.post
-        args:
-          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
-          body:
-            messages:
-              - data: ${base64.encode(json.encode(invocation_message))}
-        result: pubsubPublish
 
     - waitBeforePoll:
         call: sys.sleep
@@ -83,7 +45,7 @@ main:
     - getInvocationStatus:
         call: http.get
         args:
-          url: ${"https://dataform.googleapis.com/v1beta1/" + invocation_name}
+          url: ${"https://dataform.googleapis.com/v1/" + invocation_name}
           auth:
             type: OAuth2
         result: invocationStatus
@@ -91,129 +53,91 @@ main:
     - checkTerminalState:
         switch:
           - condition: ${invocationStatus.body.state == "SUCCEEDED"}
-            next: success
+            next: setSuccessState
           - condition: ${invocationStatus.body.state == "FAILED"}
-            next: failed
+            next: setFailedState
           - condition: ${invocationStatus.body.state == "CANCELLED"}
-            next: cancelled
+            next: setCancelledState
           - condition: ${current_attempt >= max_attempts}
-            next: timeout
+            next: setTimeoutState
         next: waitBeforePoll
 
-    - success:
-        switch:
-          - condition: ${pubsub_topic != ""}
-            next: buildFinalStatusMessage
-        next: returnSuccess
-
-    - buildFinalStatusMessage:
+    - setSuccessState:
         assign:
-          - final_status_message:
-              invocation_name: ${invocation_name}
-              state: ${invocationStatus.body.state}
+          - final_state: "SUCCEEDED"
+        next: captureEndTime
 
-    - publishFinalStatus:
-        call: http.post
+    - setFailedState:
+        assign:
+          - final_state: "FAILED"
+        next: captureEndTime
+
+    - setCancelledState:
+        assign:
+          - final_state: "CANCELLED"
+        next: captureEndTime
+
+    - setTimeoutState:
+        assign:
+          - final_state: "TIMEOUT"
+        next: captureEndTime
+
+    - captureEndTime:
+        assign:
+          - workflow_end_time: ${sys.now()}
+          - pubsub_publish_time: ${sys.now()}
+        next: maybePublishFinalSummary
+
+    - maybePublishFinalSummary:
+        switch:
+          - condition: ${pubsub_topic_job_summary != ""}
+            next: buildFinalSummaryMessage
+        next: returnOrRaise
+
+    - buildFinalSummaryMessage:
+        assign:
+          - final_summary_message:
+              workflow_name: ${workflow_name}
+              workflow_start_time: ${workflow_start_time}
+              workflow_end_time: ${workflow_end_time}
+              pubsub_publish_time: ${pubsub_publish_time}
+        next: publishFinalSummary
+
+    - publishFinalSummary:
+        call: googleapis.pubsub.v1.projects.topics.publish
         args:
-          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
+          topic: ${pubsub_topic_job_summary}
           body:
             messages:
-              - data: ${base64.encode(json.encode(final_status_message))}
-        result: pubsubFinalStatus
+              - data: ${base64.encode(json.encode(final_summary_message))}
+        result: pubsubPublishResult
+        next: returnOrRaise
+
+    - returnOrRaise:
+        switch:
+          - condition: ${final_state == "SUCCEEDED"}
+            next: returnSuccess
+          - condition: ${final_state == "FAILED"}
+            next: raiseFailed
+          - condition: ${final_state == "CANCELLED"}
+            next: raiseCancelled
+          - condition: ${final_state == "TIMEOUT"}
+            next: raiseTimeout
 
     - returnSuccess:
         return:
           status: "SUCCESS"
+          workflow_name: ${workflow_name}
           invocation_name: ${invocation_name}
-          state: ${invocationStatus.body.state}
-
-    - failed:
-        switch:
-          - condition: ${pubsub_topic != ""}
-            next: buildFinalStatusMessageFailed
-        next: raiseFailed
-
-    - buildFinalStatusMessageFailed:
-        assign:
-          - final_status_message:
-              invocation_name: ${invocation_name}
-              state: ${invocationStatus.body.state}
-
-    - publishFinalStatusFailed:
-        call: http.post
-        args:
-          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
-          body:
-            messages:
-              - data: ${base64.encode(json.encode(final_status_message))}
-        result: pubsubFinalStatusFailed
-        next: raiseFailed
+          state: ${final_state}
+          workflow_start_time: ${workflow_start_time}
+          workflow_end_time: ${workflow_end_time}
 
     - raiseFailed:
         raise: '${"Dataform invocation failed. Invocation: " + invocation_name}'
 
-    - cancelled:
-        switch:
-          - condition: ${pubsub_topic != ""}
-            next: buildFinalStatusMessageCancelled
-        next: raiseCancelled
-
-    - buildFinalStatusMessageCancelled:
-        assign:
-          - final_status_message:
-              invocation_name: ${invocation_name}
-              state: ${invocationStatus.body.state}
-
-    - publishFinalStatusCancelled:
-        call: http.post
-        args:
-          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
-          body:
-            messages:
-              - data: ${base64.encode(json.encode(final_status_message))}
-        result: pubsubFinalStatusCancelled
-        next: raiseCancelled
-
     - raiseCancelled:
         raise: '${"Dataform invocation cancelled. Invocation: " + invocation_name}'
-
-    - timeout:
-        switch:
-          - condition: ${pubsub_topic != ""}
-            next: buildFinalStatusMessageTimeout
-        next: raiseTimeout
-
-    - buildFinalStatusMessageTimeout:
-        assign:
-          - final_status_message:
-              invocation_name: ${invocation_name}
-              state: "TIMEOUT"
-
-    - publishFinalStatusTimeout:
-        call: http.post
-        args:
-          url: ${"https://pubsub.googleapis.com/v1/" + pubsub_topic + ":publish"}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: application/json
-          body:
-            messages:
-              - data: ${base64.encode(json.encode(final_status_message))}
-        result: pubsubFinalStatusTimeout
-        next: raiseTimeout
 
     - raiseTimeout:
         raise: '${"Dataform invocation polling timed out. Invocation: " + invocation_name}'
