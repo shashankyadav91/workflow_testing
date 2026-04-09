@@ -2,9 +2,9 @@
   "project_id": "test1-486007",
   "region": "us-central1",
   "repository_id": "test_workflow",
-  "git_commitish": "main",
+  "workflow_config_id": "weekly_finance",
   "poll_seconds": 30,
   "max_attempts": 40,
-  "service_account": "workflow-dataform-sa@test1-486007.iam.gserviceaccount.com"
-  ,"pubsub_topic": "projects/test1-486007/topics/test_workflow"
+  "service_account": "workflow-dataform-sa@test1-486007.iam.gserviceaccount.com",
+  "pubsub_topic_job_summary": "projects/test1-486007/topics/test_workflow"
 }
